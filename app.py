@@ -40,7 +40,8 @@ def normalize_header(h):
 
 
 def detect_columns(df):
-    """Return a dict mapping standard name -> actual column name in df, or raise ValueError."""
+    """Return a dict mapping standard name -> actual column name in df (or None if not found).
+    client/code/date are required; amount is optional."""
     normalized_to_actual = {normalize_header(c): c for c in df.columns}
     mapping = {}
     for std_name, aliases in COLUMN_ALIASES.items():
@@ -50,7 +51,7 @@ def detect_columns(df):
             if key in normalized_to_actual:
                 found = normalized_to_actual[key]
                 break
-        if found is None:
+        if found is None and std_name != "amount":
             raise ValueError(
                 f"Could not find a '{std_name}' column. "
                 f"Columns present: {list(df.columns)}"
@@ -72,12 +73,20 @@ def read_any(file_storage):
 def load_and_standardize(file_storage):
     df = read_any(file_storage)
     mapping = detect_columns(df)
+
+    if mapping["amount"] is not None:
+        # Match on actual value, decimals dropped (round then treat as whole number)
+        amount = pd.to_numeric(df[mapping["amount"]], errors="coerce").round(0)
+    else:
+        amount = pd.Series([None] * len(df))
+
     out = pd.DataFrame({
         "client": df[mapping["client"]].astype(str).str.strip(),
         "code": df[mapping["code"]].astype(str).str.strip(),
         "date": pd.to_datetime(df[mapping["date"]], errors="coerce").dt.strftime("%Y-%m-%d"),
-        "amount": pd.to_numeric(df[mapping["amount"]], errors="coerce"),
+        "amount": amount,
     })
+    out["has_amount"] = mapping["amount"] is not None
     return out
 
 
@@ -123,9 +132,18 @@ def compare():
         flash(f"Error reading files: {e}")
         return redirect(url_for("index"))
 
-    key_cols = ["client", "code", "date", "amount"]
+    # Only match on amount if BOTH files actually have an amount column.
+    # Otherwise match on client + code + date only.
+    both_have_amount = amc_df["has_amount"].iloc[0] and our_df["has_amount"].iloc[0]
+    key_cols = ["client", "code", "date", "amount"] if both_have_amount else ["client", "code", "date"]
 
-    merged = amc_df.merge(our_df.drop_duplicates(), on=key_cols, how="left", indicator=True)
+    amc_compare_df = amc_df.drop(columns=["has_amount"])
+    our_compare_df = our_df.drop(columns=["has_amount"])
+    if not both_have_amount:
+        amc_compare_df = amc_compare_df.drop(columns=["amount"])
+        our_compare_df = our_compare_df.drop(columns=["amount"])
+
+    merged = amc_compare_df.merge(our_compare_df.drop_duplicates(), on=key_cols, how="left", indicator=True)
     missing = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
 
     output = io.BytesIO()
