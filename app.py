@@ -167,9 +167,34 @@ def compare():
     )
     missing = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
 
+    # Sheet 2: records where code + date match in both files, but the amount differs.
+    if both_have_amount:
+        same_date_diff_amount = amc_compare_df.merge(
+            our_compare_df[["code", "date", "amount"]].drop_duplicates(subset=["code", "date"]),
+            on=["code", "date"],
+            how="inner",
+            suffixes=("_amc", "_our"),
+        )
+        same_date_diff_amount = same_date_diff_amount[
+            same_date_diff_amount["amount_amc"] != same_date_diff_amount["amount_our"]
+        ].copy()
+        same_date_diff_amount["difference"] = (
+            same_date_diff_amount["amount_amc"] - same_date_diff_amount["amount_our"]
+        )
+        same_date_diff_amount = same_date_diff_amount.rename(columns={
+            "client": "client name",
+            "amount_amc": "amc amount",
+            "amount_our": "our amount",
+        })[["client name", "code", "date", "amc amount", "our amount", "difference"]]
+    else:
+        same_date_diff_amount = pd.DataFrame(
+            columns=["client name", "code", "date", "amc amount", "our amount", "difference"]
+        )
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         missing.to_excel(writer, index=False, sheet_name="Missing in Our File")
+        same_date_diff_amount.to_excel(writer, index=False, sheet_name="Same Date")
     output.seek(0)
 
     return send_file(
