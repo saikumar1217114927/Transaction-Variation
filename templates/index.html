@@ -1,103 +1,147 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>AMC vs Our Data Comparator</title>
-<style>
-  body {
-    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-    background: #f4f5f7;
-    margin: 0;
-    padding: 40px 20px;
-    display: flex;
-    justify-content: center;
-  }
-  .card {
-    background: #fff;
-    max-width: 520px;
-    width: 100%;
-    padding: 32px;
-    border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-  }
-  h1 {
-    font-size: 20px;
-    margin-bottom: 4px;
-  }
-  p.sub {
-    color: #666;
-    font-size: 14px;
-    margin-top: 0;
-    margin-bottom: 24px;
-  }
-  label {
-    display: block;
-    font-weight: 600;
-    font-size: 14px;
-    margin-bottom: 6px;
-    margin-top: 18px;
-  }
-  input[type="file"] {
-    width: 100%;
-    padding: 10px;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    background: #fafafa;
-    box-sizing: border-box;
-  }
-  button {
-    margin-top: 28px;
-    width: 100%;
-    padding: 12px;
-    background: #cc785c;
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-size: 15px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  button:hover {
-    background: #b56a4f;
-  }
-  .flash {
-    background: #fdecea;
-    color: #b3261e;
-    padding: 10px 14px;
-    border-radius: 8px;
-    font-size: 14px;
-    margin-bottom: 16px;
-  }
-  .hint {
-    font-size: 12px;
-    color: #888;
-    margin-top: 4px;
-  }
-</style>
-</head>
-<body>
-  <div class="card">
-    <h1>AMC vs Our Data Comparator</h1>
-    <p class="sub">Upload both files (CSV or Excel) with client, code, date, and amount columns. You'll get back an Excel file of AMC records missing from your file.</p>
+"""
+AMC vs Our-Data Comparator
+--------------------------
+Upload two files (AMC export + our own data), each expected to contain
+columns roughly like: client, code, date, amount.
 
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        {% for m in messages %}
-          <div class="flash">{{ m }}</div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
+The app auto-detects those columns even if the headers are named a bit
+differently (e.g. "Client Name", "Txn Date", "Amt"), normalizes the date
+to yyyy-mm-dd, and finds every row in the AMC file whose
+(client, code, date, amount) combination does NOT appear in our file.
 
-    <form action="/compare" method="post" enctype="multipart/form-data">
-      <label for="amc_file">AMC file</label>
-      <input type="file" id="amc_file" name="amc_file" accept=".csv,.xlsx,.xls" required>
+Result is returned as a downloadable .xlsx file.
 
-      <label for="our_file">Our file</label>
-      <input type="file" id="our_file" name="our_file" accept=".csv,.xlsx,.xls" required>
-      <p class="hint">Accepted formats: .csv, .xlsx, .xls</p>
+Run:
+    pip install flask pandas openpyxl
+    python app.py
+Then open http://127.0.0.1:5000 in your browser.
+"""
 
-      <button type="submit">Compare &amp; Download Excel</button>
-    </form>
-  </div>
-</body>
-</html>
+from flask import Flask, request, render_template, send_file, flash, redirect, url_for
+import pandas as pd
+import io
+import os
+import re
+
+app = Flask(__name__)
+app.secret_key = "amc-compare-secret"
+
+# Candidate header names -> standard column name
+COLUMN_ALIASES = {
+    "client": ["client", "clientname", "client name", "customer", "customername", "name"],
+    "code": ["code", "clientcode", "client code", "accountcode", "account code", "acccode", "id"],
+    "date": ["date", "txndate", "txn date", "transactiondate", "transaction date", "valuedate", "value date"],
+    "amount": ["amount", "amt", "value", "txnamount", "txn amount", "transactionamount"],
+}
+
+
+def normalize_header(h):
+    return re.sub(r"[^a-z0-9]", "", str(h).strip().lower())
+
+
+def detect_columns(df):
+    """Return a dict mapping standard name -> actual column name in df, or raise ValueError."""
+    normalized_to_actual = {normalize_header(c): c for c in df.columns}
+    mapping = {}
+    for std_name, aliases in COLUMN_ALIASES.items():
+        found = None
+        for alias in aliases:
+            key = normalize_header(alias)
+            if key in normalized_to_actual:
+                found = normalized_to_actual[key]
+                break
+        if found is None:
+            raise ValueError(
+                f"Could not find a '{std_name}' column. "
+                f"Columns present: {list(df.columns)}"
+            )
+        mapping[std_name] = found
+    return mapping
+
+
+def read_any(file_storage):
+    filename = file_storage.filename or ""
+    data = file_storage.read()
+    buf = io.BytesIO(data)
+    if filename.lower().endswith((".xlsx", ".xls")):
+        return pd.read_excel(buf)
+    else:
+        return pd.read_csv(buf)
+
+
+def load_and_standardize(file_storage):
+    df = read_any(file_storage)
+    mapping = detect_columns(df)
+    out = pd.DataFrame({
+        "client": df[mapping["client"]].astype(str).str.strip(),
+        "code": df[mapping["code"]].astype(str).str.strip(),
+        "date": pd.to_datetime(df[mapping["date"]], errors="coerce").dt.strftime("%Y-%m-%d"),
+        "amount": pd.to_numeric(df[mapping["amount"]], errors="coerce"),
+    })
+    return out
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return render_template("index.html")
+
+
+@app.route("/sample_template", methods=["GET"])
+def sample_template():
+    """Provide a sample .xlsx showing the expected columns/format."""
+    sample = pd.DataFrame({
+        "client": ["Acme Corp", "Beta Industries", "Acme Corp"],
+        "code": ["CL001", "CL002", "CL001"],
+        "date": ["2026-01-15", "2026-02-01", "2026-02-20"],
+        "amount": [15000.00, 7250.50, 3000.00],
+    })
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sample.to_excel(writer, index=False, sheet_name="Sample")
+    output.seek(0)
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="sample_template.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.route("/compare", methods=["POST"])
+def compare():
+    amc_file = request.files.get("amc_file")
+    our_file = request.files.get("our_file")
+
+    if not amc_file or not our_file or amc_file.filename == "" or our_file.filename == "":
+        flash("Please upload both files.")
+        return redirect(url_for("index"))
+
+    try:
+        amc_df = load_and_standardize(amc_file)
+        our_df = load_and_standardize(our_file)
+    except Exception as e:
+        flash(f"Error reading files: {e}")
+        return redirect(url_for("index"))
+
+    key_cols = ["client", "code", "date", "amount"]
+
+    merged = amc_df.merge(our_df.drop_duplicates(), on=key_cols, how="left", indicator=True)
+    missing = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        missing.to_excel(writer, index=False, sheet_name="Missing in Our File")
+    output.seek(0)
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="missing_in_our_file.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+if __name__ == "__main__":
+    # Local dev only. On Render, gunicorn (see Procfile) runs the app instead.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
