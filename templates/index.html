@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AMC vs Our Data Comparator</title>
+<style>
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: #f4f5f7;
+    margin: 0;
+    padding: 40px 20px;
+    display: flex;
+    justify-content: center;
+  }
+  .card {
+    background: #fff;
+    max-width: 520px;
+    width: 100%;
+    padding: 32px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+  }
+  h1 {
+    font-size: 20px;
+    margin-bottom: 4px;
+  }
+  p.sub {
+    color: #666;
+    font-size: 14px;
+    margin-top: 0;
+    margin-bottom: 24px;
+  }
+  label {
+    display: block;
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 6px;
+    margin-top: 18px;
+  }
+  input[type="file"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fafafa;
+    box-sizing: border-box;
+  }
+  button {
+    margin-top: 28px;
+    width: 100%;
+    padding: 12px;
+    background: #cc785c;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover {
+    background: #b56a4f;
+  }
+  .flash {
+    background: #fdecea;
+    color: #b3261e;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    margin-bottom: 16px;
+  }
+  .hint {
+    font-size: 12px;
+    color: #888;
+    margin-top: 4px;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>AMC vs Our Data Comparator</h1>
+    <p class="sub">Upload both files (CSV or Excel) with client, code, date, and amount columns. You'll get back an Excel file of AMC records missing from your file.</p>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for m in messages %}
+          <div class="flash">{{ m }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form action="/compare" method="post" enctype="multipart/form-data">
+      <label for="amc_file">AMC file</label>
+      <input type="file" id="amc_file" name="amc_file" accept=".csv,.xlsx,.xls" required>
+
+      <label for="our_file">Our file</label>
+      <input type="file" id="our_file" name="our_file" accept=".csv,.xlsx,.xls" required>
+      <p class="hint">Accepted formats: .csv, .xlsx, .xls</p>
+
+      <button type="submit">Compare &amp; Download Excel</button>
+    </form>
+  </div>
+</body>
+</html>

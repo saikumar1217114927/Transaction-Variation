@@ -1,0 +1,126 @@
+"""
+AMC vs Our-Data Comparator
+--------------------------
+Upload two files (AMC export + our own data), each expected to contain
+columns roughly like: client, code, date, amount.
+
+The app auto-detects those columns even if the headers are named a bit
+differently (e.g. "Client Name", "Txn Date", "Amt"), normalizes the date
+to yyyy-mm-dd, and finds every row in the AMC file whose
+(client, code, date, amount) combination does NOT appear in our file.
+
+Result is returned as a downloadable .xlsx file.
+
+Run:
+    pip install flask pandas openpyxl
+    python app.py
+Then open http://127.0.0.1:5000 in your browser.
+"""
+
+from flask import Flask, request, render_template, send_file, flash, redirect, url_for
+import pandas as pd
+import io
+import os
+import re
+
+app = Flask(__name__)
+app.secret_key = "amc-compare-secret"
+
+# Candidate header names -> standard column name
+COLUMN_ALIASES = {
+    "client": ["client", "clientname", "client name", "customer", "customername", "name"],
+    "code": ["code", "clientcode", "client code", "accountcode", "account code", "acccode", "id"],
+    "date": ["date", "txndate", "txn date", "transactiondate", "transaction date", "valuedate", "value date"],
+    "amount": ["amount", "amt", "value", "txnamount", "txn amount", "transactionamount"],
+}
+
+
+def normalize_header(h):
+    return re.sub(r"[^a-z0-9]", "", str(h).strip().lower())
+
+
+def detect_columns(df):
+    """Return a dict mapping standard name -> actual column name in df, or raise ValueError."""
+    normalized_to_actual = {normalize_header(c): c for c in df.columns}
+    mapping = {}
+    for std_name, aliases in COLUMN_ALIASES.items():
+        found = None
+        for alias in aliases:
+            key = normalize_header(alias)
+            if key in normalized_to_actual:
+                found = normalized_to_actual[key]
+                break
+        if found is None:
+            raise ValueError(
+                f"Could not find a '{std_name}' column. "
+                f"Columns present: {list(df.columns)}"
+            )
+        mapping[std_name] = found
+    return mapping
+
+
+def read_any(file_storage):
+    filename = file_storage.filename or ""
+    data = file_storage.read()
+    buf = io.BytesIO(data)
+    if filename.lower().endswith((".xlsx", ".xls")):
+        return pd.read_excel(buf)
+    else:
+        return pd.read_csv(buf)
+
+
+def load_and_standardize(file_storage):
+    df = read_any(file_storage)
+    mapping = detect_columns(df)
+    out = pd.DataFrame({
+        "client": df[mapping["client"]].astype(str).str.strip(),
+        "code": df[mapping["code"]].astype(str).str.strip(),
+        "date": pd.to_datetime(df[mapping["date"]], errors="coerce").dt.strftime("%Y-%m-%d"),
+        "amount": pd.to_numeric(df[mapping["amount"]], errors="coerce"),
+    })
+    return out
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return render_template("index.html")
+
+
+@app.route("/compare", methods=["POST"])
+def compare():
+    amc_file = request.files.get("amc_file")
+    our_file = request.files.get("our_file")
+
+    if not amc_file or not our_file or amc_file.filename == "" or our_file.filename == "":
+        flash("Please upload both files.")
+        return redirect(url_for("index"))
+
+    try:
+        amc_df = load_and_standardize(amc_file)
+        our_df = load_and_standardize(our_file)
+    except Exception as e:
+        flash(f"Error reading files: {e}")
+        return redirect(url_for("index"))
+
+    key_cols = ["client", "code", "date", "amount"]
+
+    merged = amc_df.merge(our_df.drop_duplicates(), on=key_cols, how="left", indicator=True)
+    missing = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        missing.to_excel(writer, index=False, sheet_name="Missing in Our File")
+    output.seek(0)
+
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="missing_in_our_file.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+if __name__ == "__main__":
+    # Local dev only. On Render, gunicorn (see Procfile) runs the app instead.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
