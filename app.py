@@ -71,6 +71,16 @@ def read_any(file_storage):
         return pd.read_csv(buf)
 
 
+def normalize_code(series):
+    """Normalize a code column so the same code matches regardless of how each file
+    happened to store it (e.g. numeric 101.0 vs text "101", or "c001" vs "C001")."""
+    s = series.astype(str).str.strip()
+    # If a code was read as a float because the column had blank cells elsewhere
+    # (e.g. "101.0"), and it's a whole number, drop the trailing ".0".
+    s = s.str.replace(r"\.0$", "", regex=True)
+    return s.str.upper()
+
+
 def load_and_standardize(file_storage):
     df = read_any(file_storage)
     mapping = detect_columns(df)
@@ -88,7 +98,7 @@ def load_and_standardize(file_storage):
 
     out = pd.DataFrame({
         "client": client,
-        "code": df[mapping["code"]].astype(str).str.strip(),
+        "code": normalize_code(df[mapping["code"]]),
         "date": pd.to_datetime(df[mapping["date"]], errors="coerce").dt.strftime("%Y-%m-%d"),
         "amount": amount,
     })
