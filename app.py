@@ -86,6 +86,27 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/sample_template", methods=["GET"])
+def sample_template():
+    """Provide a sample .xlsx showing the expected columns/format."""
+    sample = pd.DataFrame({
+        "client": ["Acme Corp", "Beta Industries", "Acme Corp"],
+        "code": ["CL001", "CL002", "CL001"],
+        "date": ["2026-01-15", "2026-02-01", "2026-02-20"],
+        "amount": [15000.00, 7250.50, 3000.00],
+    })
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sample.to_excel(writer, index=False, sheet_name="Sample")
+    output.seek(0)
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name="sample_template.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @app.route("/compare", methods=["POST"])
 def compare():
     amc_file = request.files.get("amc_file")
